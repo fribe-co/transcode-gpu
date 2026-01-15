@@ -1,0 +1,44 @@
+server:
+  host: 0.0.0.0
+  port: 8080
+  read_timeout: 10  # Reduced from 30 for faster timeout handling
+  write_timeout: 15  # Reduced from 30 for faster response
+  idle_timeout: 120  # Increased from 60 for better connection reuse
+
+database:
+  host: postgres
+  port: 5432
+  user: cashbacktv
+  password: cashbacktv
+  dbname: cashbacktv
+  sslmode: disable
+  max_conns: 100  # Increased from 50 for better concurrency (70 streams system)
+
+redis:
+  host: redis
+  port: 6379
+  password: ""
+  db: 0
+
+jwt:
+  secret: your-super-secret-jwt-key-change-in-production
+  expiration_hours: 24
+  refresh_hours: 168
+
+ffmpeg:
+  binary_path: /usr/bin/ffmpeg
+  worker_count: 80  # Optimized for 80 channels on 44 core / 88 thread system
+  segment_time: 6  # Optimal segment time for HLS stability
+  playlist_size: 10 # Optimal playlist size for HLS buffering
+  default_preset: ultrafast  # Fastest encoding, maximum performance
+  default_bitrate: 5000k
+
+storage:
+  hls_path: /var/lib/cashbacktv/streams
+  logo_path: /var/lib/cashbacktv/logos
+  upload_path: /var/lib/cashbacktv/uploads
+
+
+
+
+

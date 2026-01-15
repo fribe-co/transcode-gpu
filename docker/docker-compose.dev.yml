@@ -1,0 +1,97 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: cashbacktv-postgres-dev
+    environment:
+      POSTGRES_USER: cashbacktv
+      POSTGRES_PASSWORD: cashbacktv
+      POSTGRES_DB: cashbacktv
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+      - ../backend/migrations:/docker-entrypoint-initdb.d
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cashbacktv"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: cashbacktv-redis-dev
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data_dev:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Backend API (Development with hot reload)
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile.dev
+    container_name: cashbacktv-backend-dev
+    environment:
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8080
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_USER=cashbacktv
+      - DATABASE_PASSWORD=cashbacktv
+      - DATABASE_DBNAME=cashbacktv
+      - DATABASE_SSLMODE=disable
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=local-dev-secret-change-in-production
+      - STORAGE_HLS_PATH=/var/lib/cashbacktv/streams
+      - STORAGE_LOGO_PATH=/var/lib/cashbacktv/logos
+      - STORAGE_UPLOAD_PATH=/var/lib/cashbacktv/uploads
+    volumes:
+      - ../backend:/app
+      - streams_data_dev:/var/lib/cashbacktv/streams
+      - logos_data_dev:/var/lib/cashbacktv/logos
+      - uploads_data_dev:/var/lib/cashbacktv/uploads
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: air -c .air.toml
+
+  # Frontend (Development with hot reload)
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile.dev
+    container_name: cashbacktv-frontend-dev
+    environment:
+      - INTERNAL_API_URL=http://backend:8080
+      - WATCHPACK_POLLING=true
+      - CHOKIDAR_USEPOLLING=true
+    volumes:
+      - ../frontend:/app
+      - /app/node_modules
+      - /app/.next
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    command: npm run dev
+
+volumes:
+  postgres_data_dev:
+  redis_data_dev:
+  streams_data_dev:
+  logos_data_dev:
+  uploads_data_dev:
+

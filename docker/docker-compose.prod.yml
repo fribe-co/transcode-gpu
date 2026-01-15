@@ -1,0 +1,144 @@
+version: '3.8'
+
+services:
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: cashbacktv-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./certbot:/var/www/certbot:ro
+      - ./certbot:/etc/letsencrypt:ro
+    # tmpfs removed - nginx now proxies to backend which has tmpfs access
+    depends_on:
+      - frontend
+      - backend
+    restart: unless-stopped
+
+  # Certbot for SSL
+  certbot:
+    image: certbot/certbot
+    container_name: cashbacktv-certbot
+    volumes:
+      - ./certbot:/var/www/certbot
+      - ./certbot:/etc/letsencrypt
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: cashbacktv-postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-cashbacktv}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+      POSTGRES_DB: ${DB_NAME:-cashbacktv}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../backend/migrations:/docker-entrypoint-initdb.d
+    deploy:
+      resources:
+        limits:
+          cpus: '8'  # 128 core system
+          memory: 64G  # Increased memory for 512GB RAM system
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-cashbacktv}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: cashbacktv-redis
+    command: redis-server --appendonly yes --maxmemory 32gb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    deploy:
+      resources:
+        limits:
+          cpus: '4'  # 128 core system
+          memory: 32G  # Increased memory for 512GB RAM system
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Backend API
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: cashbacktv-backend
+    environment:
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8080
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_USER=${DB_USER:-cashbacktv}
+      - DATABASE_PASSWORD=${DB_PASSWORD:-changeme}
+      - DATABASE_DBNAME=${DB_NAME:-cashbacktv}
+      - DATABASE_SSLMODE=disable
+      - DATABASE_MAX_CONNS=50
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=${JWT_SECRET:-change-this-secret-in-production}
+      - FFMPEG_WORKER_COUNT=160  # Optimized for 160 channels on 128 core / 256 thread system
+      - STORAGE_HLS_PATH=/var/lib/cashbacktv/streams
+      - STORAGE_LOGO_PATH=/var/lib/cashbacktv/logos
+      - STORAGE_UPLOAD_PATH=/var/lib/cashbacktv/uploads
+    volumes:
+      - logos_data:/var/lib/cashbacktv/logos
+      - uploads_data:/var/lib/cashbacktv/uploads
+    tmpfs:
+      - /var/lib/cashbacktv/streams:noexec,nosuid,size=150g  # RAM disk for HLS segments (150GB for 512GB RAM system - 160 channels with buffer)
+    deploy:
+      resources:
+        limits:
+          cpus: '112'  # Maximum CPU allocation (128 core system - 8 for Postgres - 4 for Redis - 4 for Frontend/Nginx = 112)
+          memory: 320G  # Increased memory for 512GB RAM system - optimal performance with 160 channels
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Frontend
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: cashbacktv-frontend
+    environment:
+      - NEXT_PUBLIC_API_URL=
+    deploy:
+      resources:
+        limits:
+          cpus: '4'  # 128 core system
+          memory: 16G  # Increased memory for 512GB RAM system
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  # streams_data removed - now using tmpfs (RAM disk) for better performance
+  logos_data:
+  uploads_data:
+
+
+
+

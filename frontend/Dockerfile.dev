@@ -1,0 +1,22 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install dependencies
+RUN apk add --no-cache libc6-compat
+
+# Copy package files
+COPY package.json ./
+
+# Remove package-lock.json if exists to ensure fresh install
+RUN rm -f package-lock.json
+
+# Install dependencies
+RUN npm install --legacy-peer-deps
+
+# Expose port
+EXPOSE 3000
+
+# Start development server
+CMD ["npm", "run", "dev"]
+
