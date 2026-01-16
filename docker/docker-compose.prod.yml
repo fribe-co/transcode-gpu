@@ -93,6 +93,9 @@ services:
       - STORAGE_HLS_PATH=/var/lib/cashbacktv/streams
       - STORAGE_LOGO_PATH=/var/lib/cashbacktv/logos
       - STORAGE_UPLOAD_PATH=/var/lib/cashbacktv/uploads
+      # GPU-specific environment variables (for NVIDIA Container Toolkit)
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
     volumes:
       - logos_data:/var/lib/cashbacktv/logos
       - uploads_data:/var/lib/cashbacktv/uploads
@@ -103,11 +106,14 @@ services:
         limits:
           cpus: '36'  # Maximum CPU allocation (48 threads - 6 Postgres - 4 Redis - 2 Frontend/Nginx = 36)
           memory: 64G  # 128GB RAM system - 64GB for backend (GPU-heavy encoding)
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+        # GPU device reservation (requires NVIDIA Container Toolkit)
+        # Uncomment below after installing NVIDIA Container Toolkit:
+        # See scripts/install-nvidia-container-toolkit.sh for installation
+        # reservations:
+        #   devices:
+        #     - driver: nvidia
+        #       count: all
+        #       capabilities: [gpu]
     depends_on:
       postgres:
         condition: service_healthy
