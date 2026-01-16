@@ -119,8 +119,6 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu, compute, utility, video]
-    # Enable NVIDIA GPU runtime (requires NVIDIA Container Toolkit)
-    runtime: nvidia
     depends_on:
       postgres:
         condition: service_healthy
