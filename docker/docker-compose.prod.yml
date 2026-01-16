@@ -96,6 +96,8 @@ services:
       # GPU-specific environment variables (for NVIDIA Container Toolkit)
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+      # Disable automatic nvidia-smi mount by NVIDIA Container Toolkit (we mount it manually)
+      - NVIDIA_CONTAINER_CLI_CONFIG=/etc/nvidia-container-runtime/config.toml
     volumes:
       - logos_data:/var/lib/cashbacktv/logos
       - uploads_data:/var/lib/cashbacktv/uploads
