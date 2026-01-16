@@ -42,8 +42,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '8'  # 128 core system
-          memory: 64G  # Increased memory for 512GB RAM system
+          cpus: '6'  # 24 core / 48 thread system - 6 threads for Postgres
+          memory: 16G  # 128GB RAM system - 16GB for Postgres
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-cashbacktv}"]
       interval: 10s
@@ -55,14 +55,14 @@ services:
   redis:
     image: redis:7-alpine
     container_name: cashbacktv-redis
-    command: redis-server --appendonly yes --maxmemory 32gb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory 16gb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
     deploy:
       resources:
         limits:
-          cpus: '4'  # 128 core system
-          memory: 32G  # Increased memory for 512GB RAM system
+          cpus: '4'  # 24 core / 48 thread system - 4 threads for Redis
+          memory: 16G  # 128GB RAM system - 16GB for Redis
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -89,7 +89,7 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - JWT_SECRET=${JWT_SECRET:-change-this-secret-in-production}
-      - FFMPEG_WORKER_COUNT=160  # Optimized for 160 channels on 128 core / 256 thread system
+      - FFMPEG_WORKER_COUNT=80  # Optimized for 80 channels on 24 core / 48 thread system
       - STORAGE_HLS_PATH=/var/lib/cashbacktv/streams
       - STORAGE_LOGO_PATH=/var/lib/cashbacktv/logos
       - STORAGE_UPLOAD_PATH=/var/lib/cashbacktv/uploads
@@ -97,12 +97,12 @@ services:
       - logos_data:/var/lib/cashbacktv/logos
       - uploads_data:/var/lib/cashbacktv/uploads
     tmpfs:
-      - /var/lib/cashbacktv/streams:noexec,nosuid,size=150g  # RAM disk for HLS segments (150GB for 512GB RAM system - 160 channels with buffer)
+      - /var/lib/cashbacktv/streams:noexec,nosuid,size=32g  # RAM disk for HLS segments (32GB for 128GB RAM system - 80 channels with GPU optimization)
     deploy:
       resources:
         limits:
-          cpus: '112'  # Maximum CPU allocation (128 core system - 8 for Postgres - 4 for Redis - 4 for Frontend/Nginx = 112)
-          memory: 320G  # Increased memory for 512GB RAM system - optimal performance with 160 channels
+          cpus: '36'  # Maximum CPU allocation (48 threads - 6 Postgres - 4 Redis - 2 Frontend/Nginx = 36)
+          memory: 64G  # 128GB RAM system - 64GB for backend (GPU-heavy encoding)
         reservations:
           devices:
             - driver: nvidia
@@ -126,8 +126,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '4'  # 128 core system
-          memory: 16G  # Increased memory for 512GB RAM system
+          cpus: '2'  # 24 core / 48 thread system - 2 threads for Frontend
+          memory: 4G  # 128GB RAM system - 4GB for Frontend
     depends_on:
       - backend
     restart: unless-stopped
