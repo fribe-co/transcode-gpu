@@ -104,7 +104,6 @@ services:
       # Mount nvidia-smi from host to both locations (NVIDIA Container Toolkit looks for /usr/local/bin/nvidia-smi)
       # NVIDIA Container Toolkit tries to mount /usr/local/bin/nvidia-smi, so we mount /usr/bin/nvidia-smi to both paths
       - /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
-      - /usr/bin/nvidia-smi:/usr/local/bin/nvidia-smi:ro
     tmpfs:
       - /var/lib/cashbacktv/streams:noexec,nosuid,size=32g  # RAM disk for HLS segments (32GB for 128GB RAM system - 80 channels with GPU optimization)
     deploy:

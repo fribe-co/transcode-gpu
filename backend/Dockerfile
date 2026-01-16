@@ -38,11 +38,6 @@ COPY --from=builder /app/migrations ./migrations
 # Create directories for storage
 RUN mkdir -p /var/lib/cashbacktv/streams /var/lib/cashbacktv/logos /var/lib/cashbacktv/uploads
 
-# Create /usr/local/bin directory and symlink nvidia-smi to avoid NVIDIA Container Toolkit mount errors
-# NVIDIA Container Toolkit tries to mount /usr/local/bin/nvidia-smi, but we mount it to /usr/bin/nvidia-smi
-RUN mkdir -p /usr/local/bin && \
-    ln -sf /usr/bin/nvidia-smi /usr/local/bin/nvidia-smi 2>/dev/null || true
-
 # Expose port
 EXPOSE 8080
 
