@@ -21,14 +21,25 @@ if [ ! -d "/usr/local/bin" ]; then
     sudo mkdir -p /usr/local/bin
 fi
 
-# Check if /usr/local/bin/nvidia-smi exists
-if [ -f "/usr/local/bin/nvidia-smi" ]; then
+# Check what /usr/local/bin/nvidia-smi is (file, symlink, directory, or doesn't exist)
+if [ -e "/usr/local/bin/nvidia-smi" ]; then
     if [ -L "/usr/local/bin/nvidia-smi" ]; then
         echo "✓ /usr/local/bin/nvidia-smi is already a symlink"
         ls -la /usr/local/bin/nvidia-smi
-    else
-        echo "⚠ WARNING: /usr/local/bin/nvidia-smi exists but is not a symlink"
-        echo "Not overwriting existing file"
+    elif [ -d "/usr/local/bin/nvidia-smi" ]; then
+        echo "⚠ WARNING: /usr/local/bin/nvidia-smi is a directory (this causes the mount error!)"
+        echo "Removing directory and creating symlink..."
+        sudo rm -rf /usr/local/bin/nvidia-smi
+        sudo ln -sf /usr/bin/nvidia-smi /usr/local/bin/nvidia-smi
+        echo "✓ Directory removed and symlink created"
+        ls -la /usr/local/bin/nvidia-smi
+    elif [ -f "/usr/local/bin/nvidia-smi" ]; then
+        echo "⚠ WARNING: /usr/local/bin/nvidia-smi exists as a regular file"
+        echo "Backing up and creating symlink..."
+        sudo mv /usr/local/bin/nvidia-smi /usr/local/bin/nvidia-smi.backup
+        sudo ln -sf /usr/bin/nvidia-smi /usr/local/bin/nvidia-smi
+        echo "✓ File backed up and symlink created"
+        ls -la /usr/local/bin/nvidia-smi
     fi
 else
     echo "Creating symlink: /usr/local/bin/nvidia-smi -> /usr/bin/nvidia-smi"
