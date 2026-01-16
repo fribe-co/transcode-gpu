@@ -1387,9 +1387,29 @@ func (m *ProcessManager) getNextNUMANode() int {
 
 // isNvidiaAvailable checks if NVIDIA GPU is available via nvidia-smi
 func isNvidiaAvailable() bool {
-	cmd := exec.Command("nvidia-smi", "-L")
-	if err := cmd.Run(); err != nil {
-		return false
+	// Try multiple nvidia-smi locations (container and host mount paths)
+	nvidiaSmiPaths := []string{
+		"/usr/bin/nvidia-smi",      // Standard location
+		"/usr/local/bin/nvidia-smi", // Alternative location
+		"nvidia-smi",                 // PATH fallback
 	}
-	return true
+	
+	for _, nvidiaSmiPath := range nvidiaSmiPaths {
+		cmd := exec.Command(nvidiaSmiPath, "-L")
+		// Set a timeout to avoid hanging if nvidia-smi is not accessible
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		
+		cmd = exec.CommandContext(ctx, nvidiaSmiPath, "-L")
+		
+		if err := cmd.Run(); err == nil {
+			logger.Debug().
+				Str("nvidia_smi_path", nvidiaSmiPath).
+				Msg("NVIDIA GPU detected via nvidia-smi")
+			return true
+		}
+	}
+	
+	logger.Debug().Msg("NVIDIA GPU not available (nvidia-smi not found or failed)")
+	return false
 }
