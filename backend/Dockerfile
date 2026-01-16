@@ -38,8 +38,15 @@ COPY --from=builder /app/migrations ./migrations
 # Create directories for storage
 RUN mkdir -p /var/lib/cashbacktv/streams /var/lib/cashbacktv/logos /var/lib/cashbacktv/uploads
 
+# Copy entrypoint script
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 # Expose port
 EXPOSE 8080
+
+# Use entrypoint script to set up nvidia-smi symlink
+ENTRYPOINT ["/entrypoint.sh"]
 
 # Run the application
 CMD ["./main"]
