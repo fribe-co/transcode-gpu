@@ -45,7 +45,6 @@ type ProcessManager struct {
 	gpuCount         int    // Number of available GPUs
 	gpuIndexCounter  int    // Counter for round-robin GPU assignment
 	gpuMu            sync.Mutex // Mutex for GPU index counter
-	maxProcessesPerGPU int // Maximum processes per GPU (default 8)
 }
 
 // Config holds FFmpeg configuration
@@ -127,11 +126,9 @@ func NewProcessManagerWithCallback(config *Config, hlsPath, logoPath string, set
 	
 	// Detect GPU count for load balancing
 	gpuCount := detectGPUCount()
-	maxProcessesPerGPU := 8 // Maximum 8 processes per GPU to prevent crashes
 	
 	logger.Info().
 		Int("gpu_count", gpuCount).
-		Int("max_processes_per_gpu", maxProcessesPerGPU).
 		Msg("GPU detection completed")
 	
 	return &ProcessManager{
@@ -146,7 +143,6 @@ func NewProcessManagerWithCallback(config *Config, hlsPath, logoPath string, set
 		numaNodeCounter:      0,
 		gpuCount:             gpuCount,
 		gpuIndexCounter:      0,
-		maxProcessesPerGPU:   maxProcessesPerGPU,
 	}
 }
 
@@ -1477,7 +1473,6 @@ func detectGPUCount() int {
 }
 
 // getNextGPUIndex returns the next GPU index for round-robin distribution
-// It also checks if the GPU has reached maxProcessesPerGPU limit
 func (m *ProcessManager) getNextGPUIndex() (int, error) {
 	if m.gpuCount == 0 {
 		return 0, fmt.Errorf("no GPUs available")
@@ -1486,40 +1481,8 @@ func (m *ProcessManager) getNextGPUIndex() (int, error) {
 	m.gpuMu.Lock()
 	defer m.gpuMu.Unlock()
 	
-	// Count processes per GPU
-	gpuProcessCounts := make(map[int]int)
-	for _, process := range m.processes {
-		// Count processes assigned to each GPU
-		if process.GPUIndex >= 0 && process.GPUIndex < m.gpuCount {
-			gpuProcessCounts[process.GPUIndex]++
-		}
-	}
-	
-	// Find the least loaded GPU that hasn't reached maxProcessesPerGPU
-	bestGPU := -1
-	minLoad := m.maxProcessesPerGPU + 1
-	
-	// Try round-robin starting from current counter
-	for i := 0; i < m.gpuCount; i++ {
-		gpuIndex := (m.gpuIndexCounter + i) % m.gpuCount
-		count := gpuProcessCounts[gpuIndex]
-		
-		if count < m.maxProcessesPerGPU {
-			if count < minLoad {
-				minLoad = count
-				bestGPU = gpuIndex
-			}
-		}
-	}
-	
-	// If all GPUs are at max capacity, still assign round-robin (graceful degradation)
-	if bestGPU == -1 {
-		bestGPU = m.gpuIndexCounter % m.gpuCount
-		logger.Warn().
-			Int("gpu_index", bestGPU).
-			Int("max_processes_per_gpu", m.maxProcessesPerGPU).
-			Msg("All GPUs at max capacity, using round-robin assignment")
-	}
+	// Simple round-robin distribution across available GPUs
+	gpuIndex := m.gpuIndexCounter % m.gpuCount
 	
 	// Increment counter for next assignment
 	m.gpuIndexCounter++
@@ -1527,5 +1490,5 @@ func (m *ProcessManager) getNextGPUIndex() (int, error) {
 		m.gpuIndexCounter = 0 // Reset to prevent overflow
 	}
 	
-	return bestGPU, nil
+	return gpuIndex, nil
 }
