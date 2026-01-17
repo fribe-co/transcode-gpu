@@ -42,6 +42,10 @@ type ProcessManager struct {
 	numaNodeCount    int    // Number of NUMA nodes available
 	numaNodeCounter  int    // Counter for round-robin NUMA node assignment
 	numaMu           sync.Mutex // Mutex for NUMA node counter
+	gpuCount         int    // Number of available GPUs
+	gpuIndexCounter  int    // Counter for round-robin GPU assignment
+	gpuMu            sync.Mutex // Mutex for GPU index counter
+	maxProcessesPerGPU int // Maximum processes per GPU (default 8)
 }
 
 // Config holds FFmpeg configuration
@@ -62,6 +66,7 @@ type Process struct {
 	StartedAt time.Time
 	Metrics   *domain.ProcessMetrics
 	Logs      []string
+	GPUIndex  int // GPU index used by this process (for load balancing)
 	mu        sync.RWMutex
 	logMu     sync.Mutex
 	// CPU tracking for accurate percentage calculation
@@ -120,6 +125,15 @@ func NewProcessManagerWithCallback(config *Config, hlsPath, logoPath string, set
 		numaNodeCount = 1 // Fallback to single node if detection fails
 	}
 	
+	// Detect GPU count for load balancing
+	gpuCount := detectGPUCount()
+	maxProcessesPerGPU := 8 // Maximum 8 processes per GPU to prevent crashes
+	
+	logger.Info().
+		Int("gpu_count", gpuCount).
+		Int("max_processes_per_gpu", maxProcessesPerGPU).
+		Msg("GPU detection completed")
+	
 	return &ProcessManager{
 		processes:            make(map[uuid.UUID]*Process),
 		config:               config,
@@ -130,6 +144,9 @@ func NewProcessManagerWithCallback(config *Config, hlsPath, logoPath string, set
 		statusCallback:       statusCallback,
 		numaNodeCount:        numaNodeCount,
 		numaNodeCounter:      0,
+		gpuCount:             gpuCount,
+		gpuIndexCounter:      0,
+		maxProcessesPerGPU:   maxProcessesPerGPU,
 	}
 }
 
@@ -161,8 +178,8 @@ func (m *ProcessManager) Start(channel *domain.Channel) error {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 	
-	// Build FFmpeg command
-	args, err := m.buildArgs(channel, outputDir, activeProcessCount)
+	// Build FFmpeg command and get GPU index
+	args, gpuIndex, err := m.buildArgs(channel, outputDir, activeProcessCount)
 	if err != nil {
 		return fmt.Errorf("failed to build FFmpeg args: %w", err)
 	}
@@ -228,6 +245,7 @@ func (m *ProcessManager) Start(channel *domain.Channel) error {
 		StartedAt: time.Now(),
 		Metrics:   &domain.ProcessMetrics{},
 		Logs:      make([]string, 0, 1000), // Pre-allocate for 1000 log lines
+		GPUIndex:  gpuIndex, // Store GPU index for load balancing
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -568,8 +586,8 @@ func (m *ProcessManager) IsRunning(channelID uuid.UUID) bool {
 	return exists
 }
 
-// buildArgs builds FFmpeg command arguments
-func (m *ProcessManager) buildArgs(channel *domain.Channel, outputDir string, activeProcessCount int) ([]string, error) {
+// buildArgs builds FFmpeg command arguments and returns GPU index used
+func (m *ProcessManager) buildArgs(channel *domain.Channel, outputDir string, activeProcessCount int) ([]string, int, error) {
 	// Start with basic FFmpeg arguments with reconnect and stability options
 	// Optimized for 70 simultaneous streams with stability and performance
 	args := []string{
@@ -587,25 +605,52 @@ func (m *ProcessManager) buildArgs(channel *domain.Channel, outputDir string, ac
 		"-analyzeduration", "2000000", // 2 seconds (reduced for faster startup)
 		"-probesize", "2000000", // 2MB (reduced for faster startup)
 		"-thread_queue_size", "512", // Balanced queue size (reduced memory per stream)
-		"-i", channel.SourceURL,
 	}
-
-	// Check for NVIDIA GPU availability for hardware acceleration
-	useNVENC := isNvidiaAvailable()
+	
+	// Check for NVIDIA GPU availability and get GPU index for load balancing
+	useNVENC := m.gpuCount > 0
+	var gpuIndex int = 0
+	var hwaccelParams []string
+	
 	if useNVENC {
-		// Insert hardware acceleration at the beginning of input arguments
-		// -hwaccel cuda: Use CUDA for hardware acceleration
-		// Note: We need to put this before -i if we want to decode with GPU as well,
-		// but usually decoding with CPU and encoding with GPU is more stable for various inputs.
-		// For now, we'll keep it simple and just use GPU for encoding.
-		logger.Debug().
-			Str("channel_id", channel.ID.String()).
-			Msg("NVIDIA GPU detected, using NVENC for encoding")
-	} else {
+		// Get next GPU index for round-robin distribution
+		var err error
+		gpuIndex, err = m.getNextGPUIndex()
+		if err != nil {
+			logger.Warn().
+				Err(err).
+				Str("channel_id", channel.ID.String()).
+				Msg("Failed to get GPU index, falling back to CPU encoding")
+			useNVENC = false
+		} else {
+			// Add hardware acceleration parameters before input
+			// -hwaccel cuda: Use CUDA for hardware acceleration
+			// -hwaccel_device: Specify which GPU to use
+			hwaccelParams = []string{
+				"-hwaccel", "cuda",
+				"-hwaccel_device", strconv.Itoa(gpuIndex),
+			}
+			logger.Info().
+				Str("channel_id", channel.ID.String()).
+				Int("gpu_index", gpuIndex).
+				Int("gpu_count", m.gpuCount).
+				Msg("NVIDIA GPU detected, using NVENC for encoding with load balancing")
+		}
+	}
+	
+	if !useNVENC {
 		logger.Debug().
 			Str("channel_id", channel.ID.String()).
 			Msg("NVIDIA GPU not detected, falling back to libx264 (CPU)")
 	}
+	
+	// Add hardware acceleration parameters before input (if using GPU)
+	if len(hwaccelParams) > 0 {
+		args = append(args, hwaccelParams...)
+	}
+	
+	// Add input source
+	args = append(args, "-i", channel.SourceURL)
 
 	// Get settings from database first (this is the source of truth)
 	preset := m.config.DefaultPreset
@@ -706,7 +751,7 @@ func (m *ProcessManager) buildArgs(channel *domain.Channel, outputDir string, ac
 
 		// Check if logo file exists
 		if _, err := os.Stat(logoPath); os.IsNotExist(err) {
-			return nil, fmt.Errorf("logo file not found: %s", logoPath)
+			return nil, -1, fmt.Errorf("logo file not found: %s", logoPath)
 		}
 
 		// Add logo as second input
@@ -826,7 +871,7 @@ func (m *ProcessManager) buildArgs(channel *domain.Channel, outputDir string, ac
 	
 	// Video encoding parameters
 	if useNVENC {
-		// NVENC optimized parameters
+		// NVENC optimized parameters with specific GPU device
 		args = append(args,
 			"-c:v", "h264_nvenc",
 			"-preset", "p4", // Medium quality/speed for newer NVENC
@@ -842,7 +887,7 @@ func (m *ProcessManager) buildArgs(channel *domain.Channel, outputDir string, ac
 			"-keyint_min", strconv.Itoa(gopSize/2),
 			"-force_key_frames", fmt.Sprintf("expr:gte(t,n_forced*%d)", segmentTime),
 			"-bf", "0",
-			"-gpu", "any", // Use any available GPU or round-robin if we want to be fancy
+			"-gpu", strconv.Itoa(gpuIndex), // Use specific GPU index (load balanced)
 		)
 	} else {
 		// x264 (CPU) parameters
@@ -891,7 +936,7 @@ func (m *ProcessManager) buildArgs(channel *domain.Channel, outputDir string, ac
 		filepath.Join(outputDir, "index.m3u8"),
 	)
 
-	return args, nil
+	return args, gpuIndex, nil
 }
 
 // monitorProgress parses FFmpeg progress output and collects logs
@@ -1387,6 +1432,11 @@ func (m *ProcessManager) getNextNUMANode() int {
 
 // isNvidiaAvailable checks if NVIDIA GPU is available via nvidia-smi
 func isNvidiaAvailable() bool {
+	return detectGPUCount() > 0
+}
+
+// detectGPUCount detects the number of available NVIDIA GPUs
+func detectGPUCount() int {
 	// Try multiple nvidia-smi locations (container and host mount paths)
 	nvidiaSmiPaths := []string{
 		"/usr/bin/nvidia-smi",      // Standard location
@@ -1395,21 +1445,87 @@ func isNvidiaAvailable() bool {
 	}
 	
 	for _, nvidiaSmiPath := range nvidiaSmiPaths {
-		cmd := exec.Command(nvidiaSmiPath, "-L")
 		// Set a timeout to avoid hanging if nvidia-smi is not accessible
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
+		cmd := exec.CommandContext(ctx, nvidiaSmiPath, "--list-gpus")
 		
-		cmd = exec.CommandContext(ctx, nvidiaSmiPath, "-L")
+		output, err := cmd.Output()
+		cancel()
 		
-		if err := cmd.Run(); err == nil {
-			logger.Debug().
-				Str("nvidia_smi_path", nvidiaSmiPath).
-				Msg("NVIDIA GPU detected via nvidia-smi")
-			return true
+		if err == nil {
+			// Count lines in output (each line is one GPU)
+			lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+			count := 0
+			for _, line := range lines {
+				if strings.TrimSpace(line) != "" {
+					count++
+				}
+			}
+			
+			if count > 0 {
+				logger.Debug().
+					Str("nvidia_smi_path", nvidiaSmiPath).
+					Int("gpu_count", count).
+					Msg("NVIDIA GPUs detected via nvidia-smi")
+				return count
+			}
 		}
 	}
 	
-	logger.Debug().Msg("NVIDIA GPU not available (nvidia-smi not found or failed)")
-	return false
+	logger.Debug().Msg("No NVIDIA GPUs detected (nvidia-smi not found or failed)")
+	return 0
+}
+
+// getNextGPUIndex returns the next GPU index for round-robin distribution
+// It also checks if the GPU has reached maxProcessesPerGPU limit
+func (m *ProcessManager) getNextGPUIndex() (int, error) {
+	if m.gpuCount == 0 {
+		return 0, fmt.Errorf("no GPUs available")
+	}
+	
+	m.gpuMu.Lock()
+	defer m.gpuMu.Unlock()
+	
+	// Count processes per GPU
+	gpuProcessCounts := make(map[int]int)
+	for _, process := range m.processes {
+		// Count processes assigned to each GPU
+		if process.GPUIndex >= 0 && process.GPUIndex < m.gpuCount {
+			gpuProcessCounts[process.GPUIndex]++
+		}
+	}
+	
+	// Find the least loaded GPU that hasn't reached maxProcessesPerGPU
+	bestGPU := -1
+	minLoad := m.maxProcessesPerGPU + 1
+	
+	// Try round-robin starting from current counter
+	for i := 0; i < m.gpuCount; i++ {
+		gpuIndex := (m.gpuIndexCounter + i) % m.gpuCount
+		count := gpuProcessCounts[gpuIndex]
+		
+		if count < m.maxProcessesPerGPU {
+			if count < minLoad {
+				minLoad = count
+				bestGPU = gpuIndex
+			}
+		}
+	}
+	
+	// If all GPUs are at max capacity, still assign round-robin (graceful degradation)
+	if bestGPU == -1 {
+		bestGPU = m.gpuIndexCounter % m.gpuCount
+		logger.Warn().
+			Int("gpu_index", bestGPU).
+			Int("max_processes_per_gpu", m.maxProcessesPerGPU).
+			Msg("All GPUs at max capacity, using round-robin assignment")
+	}
+	
+	// Increment counter for next assignment
+	m.gpuIndexCounter++
+	if m.gpuIndexCounter >= m.gpuCount*1000 {
+		m.gpuIndexCounter = 0 // Reset to prevent overflow
+	}
+	
+	return bestGPU, nil
 }
